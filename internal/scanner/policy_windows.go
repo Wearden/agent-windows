@@ -244,7 +244,7 @@ func serviceStart(name string) (string, error) {
 	if e != nil {
 		return "", e
 	}
-	service, _, err := openService.Call(manager, uintptr(unsafe.Pointer(serviceName)), 1)
+	service, _, err := openService.Call(manager, uintptr(unsafe.Pointer(serviceName)), 1|4)
 	if service == 0 {
 		if err == syscall.Errno(1060) {
 			return "Disabled", nil
@@ -265,7 +265,18 @@ func serviceStart(name string) (string, error) {
 	// dwStartType is the second DWORD, independent of pointer size and alignment.
 	start := *(*uint32)(unsafe.Pointer(&buf[4]))
 	if start == 4 {
-		return "Disabled", nil
+		state, err := serviceRuntime(windows.Handle(service))
+		if err != nil {
+			return "", err
+		}
+		switch state {
+		case windows.SERVICE_STOPPED:
+			return "Disabled", nil
+		case windows.SERVICE_RUNNING, windows.SERVICE_PAUSED:
+			return "NotStopped", nil
+		default:
+			return "", errors.New("service runtime transition prevents a stable disabled-state observation")
+		}
 	}
 	return "Enabled", nil
 }

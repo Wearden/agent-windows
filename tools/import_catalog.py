@@ -61,6 +61,8 @@ for platform in ("windows-10", "windows-11", "server-2022"):
                 name = re.search(r"\^(Se[A-Za-z]+)\\s", command).group(1)
                 sids = expected.split("=", 1)[-1].replace("*", "").strip()
                 rule.update(kind="user_right", name=name, match="set_contains" if comparison=="contains" else "set_equals", expected=sids)
+                if rule["id"] == "WIN-URA-007":
+                    rule.update(match="set_equals", expected="S-1-5-32-544,S-1-5-19,S-1-5-20,S-1-5-6")
             elif rule["id"].startswith("WIN-AUD-"):
                 name = re.search(r'/subcategory:"([^"]+)"', command).group(1)
                 rule.update(kind="audit_policy", name=name, match="equals", expected={"Success":"1","Failure":"2","Success and Failure":"3"}[expected])
@@ -88,7 +90,7 @@ for platform in ("windows-10", "windows-11", "server-2022"):
                 raise ValueError("platform target difference needs an explicit platform allowlist: " + rule["id"])
             approved_targets[rule["id"]] = native_target
             rules.append(rule)
-    result = {"version": "1", "benchmark_id": benchmark_id, "ruleset_version": "native-windows-3", "rules": rules}
+    result = {"version": "1", "benchmark_id": benchmark_id, "ruleset_version": "native-windows-4", "rules": rules}
     (target / (platform + ".json")).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     authoritative = source.parent / "native" / "windows" / platform / "registry.json"
     authoritative.parent.mkdir(parents=True, exist_ok=True)

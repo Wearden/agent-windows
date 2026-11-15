@@ -29,6 +29,9 @@ func Snapshot(plan RegistryPlan) (RegistrySnapshot, error) {
 	if plan.Provider == "service" {
 		return snapshotService(plan)
 	}
+	if plan.Provider == "user_right" {
+		return snapshotUserRight(plan)
+	}
 	p, err := syscall.UTF16PtrFromString(plan.Path)
 	if err != nil {
 		return snapshot, errors.New("invalid compiled registry path")
@@ -98,6 +101,9 @@ func ReplaceContext(ctx context.Context, plan RegistryPlan, want, expected Regis
 	}
 	if plan.Provider == "service" {
 		return replaceService(ctx, plan, want, expected)
+	}
+	if plan.Provider == "user_right" {
+		return replaceUserRight(ctx, plan, want, expected)
 	}
 	p, err := syscall.UTF16PtrFromString(plan.Path)
 	if err != nil {

@@ -52,6 +52,13 @@ var writableAuditPolicies = map[string]uint32{
 }
 
 func Plan(ruleID string) (RegistryPlan, error) {
+	if _, ok := writableRights[ruleID]; ok {
+		target := approvedTargets[ruleID]
+		if target.Kind != "user_right" || target.Path != "" || !rightNames[target.Name] {
+			return RegistryPlan{}, errors.New("compiled user-right target is invalid")
+		}
+		return RegistryPlan{RuleID: ruleID, Name: target.Name, Provider: target.Kind}, nil
+	}
 	if target, ok := approvedTargets[ruleID]; ok && target.Kind == "service" && serviceNames[target.Name] && target.Path == "" {
 		return RegistryPlan{RuleID: ruleID, Name: target.Name, Provider: "service", Desired: 4}, nil
 	}
@@ -106,6 +113,9 @@ func RemediationHost(benchmark string) error {
 	return supportedBenchmark(benchmark)
 }
 func DesiredSnapshot(plan RegistryPlan, before RegistrySnapshot) RegistrySnapshot {
+	if plan.Provider == "user_right" {
+		return desiredRightSnapshot(plan, before)
+	}
 	if plan.Provider == "service" {
 		if !before.Exists {
 			return before
@@ -143,6 +153,8 @@ func snapshotKind(plan RegistryPlan) uint32 {
 		return auditPolicySnapshotKind
 	case "service":
 		return serviceSnapshotKind
+	case "user_right":
+		return rightSnapshotKind
 	default:
 		return 0
 	}
@@ -152,6 +164,10 @@ func ValidSnapshot(plan RegistryPlan, snapshot RegistrySnapshot) bool {
 	kind := snapshotKind(plan)
 	if kind == 0 || snapshot.RuleID != plan.RuleID {
 		return false
+	}
+	if kind == rightSnapshotKind {
+		_, err := decodeRightSIDs(snapshot.Data)
+		return snapshot.Exists && snapshot.Kind == kind && err == nil
 	}
 	if kind == serviceSnapshotKind {
 		if !snapshot.Exists {
@@ -211,14 +227,17 @@ func SameSnapshot(a, b RegistrySnapshot) bool {
 	return a.RuleID == b.RuleID && a.Exists == b.Exists && a.Kind == b.Kind && bytes.Equal(a.Data, b.Data)
 }
 
-// Multi-step service operations can be interrupted between their typed fields.
-// Only combinations of the two journaled endpoints can be compensated.
+// Multi-step operations can be interrupted between native writes. Compensation
+// accepts only defined intermediate states between the two journaled endpoints.
 func CanRestoreSnapshot(plan RegistryPlan, current, before, target RegistrySnapshot) bool {
 	if !ValidSnapshot(plan, current) || !ValidSnapshot(plan, before) || !ValidSnapshot(plan, target) {
 		return false
 	}
 	if SameSnapshot(current, before) || SameSnapshot(current, target) {
 		return true
+	}
+	if plan.Provider == "user_right" {
+		return compatibleRightRestore(current, before, target)
 	}
 	if plan.Provider != "service" || !current.Exists || !before.Exists || !target.Exists {
 		return false
@@ -250,6 +269,30 @@ func ValidApplyTarget(plan RegistryPlan, target, before RegistrySnapshot) bool {
 func SnapshotStatus(plan RegistryPlan, snapshot RegistrySnapshot) string {
 	if !ValidSnapshot(plan, snapshot) {
 		return wire.Error
+	}
+	if plan.Provider == "user_right" {
+		actual, err := decodeRightSIDs(snapshot.Data)
+		if err != nil {
+			return wire.Error
+		}
+		target := writableRights[plan.RuleID]
+		if target.contains {
+			set := rightSIDSet(actual)
+			for _, sid := range target.sids {
+				if !set[string(sid)] {
+					return wire.Fail
+				}
+			}
+			return wire.Pass
+		}
+		data, err := encodeRightSIDs(target.sids)
+		if err != nil {
+			return wire.Error
+		}
+		if bytes.Equal(snapshot.Data, data) {
+			return wire.Pass
+		}
+		return wire.Fail
 	}
 	if plan.Provider == "service" {
 		if !snapshot.Exists || (binary.LittleEndian.Uint32(snapshot.Data) == 4 && binary.LittleEndian.Uint32(snapshot.Data[4:]) == 1) {
@@ -307,6 +350,9 @@ func SnapshotDescription(snapshot RegistrySnapshot) string {
 	}
 	if snapshot.Kind == serviceSnapshotKind {
 		return "native service startup, runtime and delayed-start state retained locally"
+	}
+	if snapshot.Kind == rightSnapshotKind {
+		return "native user-right assignments present; exact SID set retained locally"
 	}
 	if snapshot.Kind == 1 {
 		return "REG_SZ present; exact original text retained locally"

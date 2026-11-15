@@ -295,11 +295,15 @@ func execute(ctx context.Context, root string, j *journal) error {
 		}
 		j.Undo[id] = before
 		if j.Task.Action == "apply" {
+			target := scanner.DesiredSnapshot(plan, before)
+			if !scanner.ValidApplyTarget(plan, target, before) {
+				return failAndRestore(root, j, "Compiled apply target exceeds native snapshot limits or is inconsistent; no mutation authorized")
+			}
 			record := backup{AgentID: j.AgentID, RunID: j.Task.RunID, TaskID: j.Task.ID, Snapshot: before}
 			if err = store(backupPath(root, j.Task.RunID, id), record, true); err != nil {
 				return failAndRestore(root, j, "Backup already exists or cannot be persisted; original backup was not overwritten")
 			}
-			j.Targets[id] = scanner.DesiredSnapshot(plan, before)
+			j.Targets[id] = target
 			if scanner.SnapshotStatus(plan, before) == wire.Pass {
 				j.Targets[id] = before
 			}
