@@ -59,6 +59,14 @@ var writableAuditPolicies = map[string]uint32{
 }
 
 func Plan(ruleID string) (RegistryPlan, error) {
+	if ruleID == "WIN-SMB-004" {
+		target := approvedTargets[ruleID]
+		if target.Kind != "registry" || target.Path != `SYSTEM\CurrentControlSet\Services\mrxsmb10` || target.Name != "Start" {
+			return RegistryPlan{}, errors.New("invalid compiled SMB driver target")
+		}
+		return RegistryPlan{RuleID: ruleID, Name: "mrxsmb10", Provider: "smb_driver", Desired: 4}, nil
+	}
+
 	if desired, ok := writableWMI[ruleID]; ok {
 		target := approvedTargets[ruleID]
 		_, known := wmiChecks[target.Name]
@@ -158,6 +166,9 @@ func RemediationHost(benchmark string) error {
 	return supportedBenchmark(benchmark)
 }
 func DesiredSnapshot(plan RegistryPlan, before RegistrySnapshot) RegistrySnapshot {
+	if plan.Provider == "smb_driver" {
+		return desiredSMBDriver(plan, before)
+	}
 	if plan.Provider == "wmi" {
 		if !ValidSnapshot(plan, before) {
 			return RegistrySnapshot{RuleID: plan.RuleID}
@@ -224,6 +235,8 @@ func snapshotKind(plan RegistryPlan) uint32 {
 		return guestSnapshotKind
 	case "wmi":
 		return wmiSnapshotKind
+	case "smb_driver":
+		return smbDriverSnapshotKind
 	default:
 		return 0
 	}
@@ -233,6 +246,9 @@ func ValidSnapshot(plan RegistryPlan, snapshot RegistrySnapshot) bool {
 	kind := snapshotKind(plan)
 	if kind == 0 || snapshot.RuleID != plan.RuleID {
 		return false
+	}
+	if kind == smbDriverSnapshotKind {
+		return validSMBDriverSnapshot(snapshot)
 	}
 	if kind == wmiSnapshotKind {
 		return snapshot.Exists && snapshot.Kind == kind && validWMIData(plan, snapshot.Data)
@@ -313,6 +329,9 @@ func CanRestoreSnapshot(plan RegistryPlan, current, before, target RegistrySnaps
 	if SameSnapshot(current, before) || SameSnapshot(current, target) {
 		return true
 	}
+	if plan.Provider == "smb_driver" {
+		return compatibleSMBDriverRestore(current, before, target)
+	}
 	if plan.Provider == "user_right" {
 		return compatibleRightRestore(current, before, target)
 	}
@@ -346,6 +365,12 @@ func ValidApplyTarget(plan RegistryPlan, target, before RegistrySnapshot) bool {
 func SnapshotStatus(plan RegistryPlan, snapshot RegistrySnapshot) string {
 	if !ValidSnapshot(plan, snapshot) {
 		return wire.Error
+	}
+	if plan.Provider == "smb_driver" {
+		if binary.LittleEndian.Uint32(snapshot.Data) == 4 {
+			return wire.Pass
+		}
+		return wire.Fail
 	}
 	if plan.RuleID == "WIN-FW-009" {
 		value := binary.LittleEndian.Uint64(snapshot.Data[8:])
@@ -429,6 +454,9 @@ func SnapshotStatus(plan RegistryPlan, snapshot RegistrySnapshot) string {
 func SnapshotDescription(snapshot RegistrySnapshot) string {
 	if !snapshot.Exists {
 		return "value absent"
+	}
+	if snapshot.Kind == smbDriverSnapshotKind {
+		return "SMB driver startup and Workstation dependency configuration retained privately; reboot required"
 	}
 	if snapshot.Kind == wmiSnapshotKind {
 		return "native selected WMI scalar and instance fingerprint retained privately"

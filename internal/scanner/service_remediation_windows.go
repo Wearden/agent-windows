@@ -74,6 +74,10 @@ func withNativeService(plan RegistryPlan, write bool, operation func(windows.Han
 }
 
 func readServiceMetadata(service windows.Handle) (serviceMetadata, error) {
+	return readServicePolicyMetadata(service, false, false)
+}
+
+func readServicePolicyMetadata(service windows.Handle, driver, mutableDependencies bool) (serviceMetadata, error) {
 	var meta serviceMetadata
 	var needed uint32
 	err := windows.QueryServiceConfig(service, nil, 0, &needed)
@@ -86,7 +90,11 @@ func readServiceMetadata(service windows.Handle) (serviceMetadata, error) {
 		return meta, errors.New("cannot read service configuration")
 	}
 	meta.start, meta.kind = config.StartType, config.ServiceType
-	if meta.start < windows.SERVICE_AUTO_START || meta.start > windows.SERVICE_DISABLED || (meta.kind&^uint32(windows.SERVICE_INTERACTIVE_PROCESS) != windows.SERVICE_WIN32_OWN_PROCESS && meta.kind&^uint32(windows.SERVICE_INTERACTIVE_PROCESS) != windows.SERVICE_WIN32_SHARE_PROCESS) {
+	if driver {
+		if meta.start > windows.SERVICE_DISABLED || meta.kind != windows.SERVICE_FILE_SYSTEM_DRIVER {
+			return meta, errors.New("SMB driver configuration is outside the reviewed filesystem-driver shape")
+		}
+	} else if meta.start < windows.SERVICE_AUTO_START || meta.start > windows.SERVICE_DISABLED || (meta.kind&^uint32(windows.SERVICE_INTERACTIVE_PROCESS) != windows.SERVICE_WIN32_OWN_PROCESS && meta.kind&^uint32(windows.SERVICE_INTERACTIVE_PROCESS) != windows.SERVICE_WIN32_SHARE_PROCESS) {
 		return meta, errors.New("driver or unreviewed service configuration is outside this provider")
 	}
 	// Hash unmodified basic configuration, never store/emit its text. A service
@@ -133,16 +141,23 @@ func readServiceMetadata(service windows.Handle) (serviceMetadata, error) {
 				return meta, errors.New("invalid UTF-16 service dependency name")
 			}
 			meta.dependencies = append(meta.dependencies, name)
-			addText(buffer[offset+first*2 : offset+i*2])
+			if !mutableDependencies {
+				addText(buffer[offset+first*2 : offset+i*2])
+			}
 			first = i + 1
 		}
 		if !terminated {
 			return meta, errors.New("unterminated native service dependency list")
 		}
 	}
-	hash.Write(binary.LittleEndian.AppendUint32(nil, uint32(len(meta.dependencies))))
+	if !mutableDependencies {
+		hash.Write(binary.LittleEndian.AppendUint32(nil, uint32(len(meta.dependencies))))
+	}
 	copy(meta.fingerprint[:], hash.Sum(nil))
 	runtime.KeepAlive(buffer)
+	if driver {
+		return meta, nil
+	}
 	var delayed windows.SERVICE_DELAYED_AUTO_START_INFO
 	if windows.QueryServiceConfig2(service, windows.SERVICE_CONFIG_DELAYED_AUTO_START_INFO, (*byte)(unsafe.Pointer(&delayed)), uint32(unsafe.Sizeof(delayed)), &needed) != nil || delayed.IsDelayedAutoStartUp > 1 {
 		return meta, errors.New("cannot read delayed service startup flag")
