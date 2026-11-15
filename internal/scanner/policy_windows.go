@@ -48,6 +48,8 @@ type auditInfo struct {
 
 func nativeValue(r Rule) (string, error) {
 	switch r.Kind {
+	case "password_flag":
+		return passwordFlagValue(r.ID)
 	case "registry":
 		return registryValue(r.Path, r.Name)
 	case "password_policy":

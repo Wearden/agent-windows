@@ -59,6 +59,14 @@ var writableAuditPolicies = map[string]uint32{
 }
 
 func Plan(ruleID string) (RegistryPlan, error) {
+	if name, _, desired, known := passwordFlagPolicy(ruleID); known {
+		target := approvedTargets[ruleID]
+		if target.Kind != "password_flag" || target.Path != "" || target.Name != name {
+			return RegistryPlan{}, errors.New("invalid compiled password flag target")
+		}
+		return RegistryPlan{RuleID: ruleID, Name: name, Provider: target.Kind, Desired: desired}, nil
+	}
+
 	if ruleID == "WIN-SMB-004" {
 		target := approvedTargets[ruleID]
 		if target.Kind != "registry" || target.Path != `SYSTEM\CurrentControlSet\Services\mrxsmb10` || target.Name != "Start" {
@@ -166,6 +174,15 @@ func RemediationHost(benchmark string) error {
 	return supportedBenchmark(benchmark)
 }
 func DesiredSnapshot(plan RegistryPlan, before RegistrySnapshot) RegistrySnapshot {
+	if plan.Provider == "password_flag" {
+		if !ValidSnapshot(plan, before) {
+			return RegistrySnapshot{RuleID: plan.RuleID}
+		}
+		data := append([]byte(nil), before.Data...)
+		binary.LittleEndian.PutUint32(data, plan.Desired)
+		return RegistrySnapshot{RuleID: plan.RuleID, Exists: true, Kind: passwordFlagSnapshotKind, Data: data}
+	}
+
 	if plan.Provider == "smb_driver" {
 		return desiredSMBDriver(plan, before)
 	}
@@ -237,6 +254,8 @@ func snapshotKind(plan RegistryPlan) uint32 {
 		return wmiSnapshotKind
 	case "smb_driver":
 		return smbDriverSnapshotKind
+	case "password_flag":
+		return passwordFlagSnapshotKind
 	default:
 		return 0
 	}
@@ -247,6 +266,10 @@ func ValidSnapshot(plan RegistryPlan, snapshot RegistrySnapshot) bool {
 	if kind == 0 || snapshot.RuleID != plan.RuleID {
 		return false
 	}
+	if kind == passwordFlagSnapshotKind {
+		return snapshot.Exists && snapshot.Kind == kind && len(snapshot.Data) == 36 && binary.LittleEndian.Uint32(snapshot.Data) <= 1 && !bytes.Equal(snapshot.Data[4:], make([]byte, 32))
+	}
+
 	if kind == smbDriverSnapshotKind {
 		return validSMBDriverSnapshot(snapshot)
 	}
@@ -454,6 +477,9 @@ func SnapshotStatus(plan RegistryPlan, snapshot RegistrySnapshot) string {
 func SnapshotDescription(snapshot RegistrySnapshot) string {
 	if !snapshot.Exists {
 		return "value absent"
+	}
+	if snapshot.Kind == passwordFlagSnapshotKind {
+		return "selected local password policy flag and domain fingerprint retained privately; no password data"
 	}
 	if snapshot.Kind == smbDriverSnapshotKind {
 		return "SMB driver startup and Workstation dependency configuration retained privately; reboot required"

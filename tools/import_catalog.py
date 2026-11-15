@@ -81,8 +81,7 @@ for platform in ("windows-10", "windows-11", "server-2022"):
                 profile, prop = re.fullmatch(r"\(Get-NetFirewallProfile -Name ([A-Za-z]+)\)\.([A-Za-z]+)", command).groups()
                 rule.update(kind="firewall", name=profile+"."+prop, match=comparison, expected=expected)
             elif rule["id"] in ("WIN-PWD-002", "WIN-PWD-009"):
-                policy_name = "password complexity" if rule["id"]=="WIN-PWD-002" else "reversible password storage"
-                rule["reason"] = "Manual review required: " + policy_name + " is not exposed by the permitted NetUserModals policy provider; password stores are not read."
+                rule.update(kind="password_flag", name="complexity" if rule["id"]=="WIN-PWD-002" else "reversible_storage", match="equals", expected="1" if rule["id"]=="WIN-PWD-002" else "0")
             if rule["kind"]!="unsupported":
                 rule.pop("reason", None)
             native_target = (rule["kind"], rule.get("path", ""), rule.get("name", ""))
@@ -90,7 +89,7 @@ for platform in ("windows-10", "windows-11", "server-2022"):
                 raise ValueError("platform target difference needs an explicit platform allowlist: " + rule["id"])
             approved_targets[rule["id"]] = native_target
             rules.append(rule)
-    result = {"version": "1", "benchmark_id": benchmark_id, "ruleset_version": "native-windows-4", "rules": rules}
+    result = {"version": "1", "benchmark_id": benchmark_id, "ruleset_version": "native-windows-5", "rules": rules}
     (target / (platform + ".json")).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     authoritative = source.parent / "native" / "windows" / platform / "registry.json"
     authoritative.parent.mkdir(parents=True, exist_ok=True)

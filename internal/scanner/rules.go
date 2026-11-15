@@ -117,6 +117,11 @@ func Decode(data []byte) (Ruleset, error) {
 					return rs, errors.New("invalid numeric expectation")
 				}
 			}
+		case "password_flag":
+			name, _, desired, known := passwordFlagPolicy(r.ID)
+			if !known || r.Name != name || r.Path != "" || r.Match != "equals" || r.Expected != strconv.FormatUint(uint64(desired), 10) {
+				return rs, errors.New("invalid compiled password policy flag")
+			}
 		case "password_policy":
 			if !policyNames[r.Name] || (r.Match != "numeric_gte" && r.Match != "numeric_lte") {
 				return rs, errors.New("unsupported password policy field or comparison")

@@ -2,7 +2,7 @@
 
 Native Go agent for Windows 10, Windows 11 and Windows Server 2022. It uses the standard library, the local shared `github.com/Wearden/proto/wire` contract, and `golang.org/x/sys/windows/svc` for Windows service hosting. It never launches PowerShell, secedit, auditpol, a shell, arbitrary remediation commands, or downloaded code.
 
-The native catalog preserves all 100 control IDs in each legacy Windows benchmark. **98 controls have native implementations; 2 require manual review and report `error`. This is not full benchmark parity.** Implemented providers use registry, NetAPI account policy, LSA user rights, advanced audit policy, Service Control Manager, and fixed read-only WMI queries. These counts describe implementations, not passing checks or verified runtime coverage. Unsupported checks and access/provider errors do not count as passing controls. No build, test, host scan, or runtime validation was performed during this rewrite, as requested.
+The native catalog preserves all 100 control IDs in each legacy Windows benchmark. **100 controls have native evaluator implementations. This count does not prove complete runtime benchmark parity.** Implemented providers use registry, NetAPI/SAM policy metadata, LSA user rights, advanced audit policy, Service Control Manager, and fixed read-only WMI queries. These counts describe implementations, not passing checks or verified runtime coverage. Unsupported checks and access/provider errors do not count as passing controls. Compiler checks are recorded in the rewrite progress log. No tests, host scans or runtime validation were performed.
 
 From the sibling repository parent, use a Go workspace containing `./proto`, `./agent-windows` and other project modules. Go 1.25 or newer is required. The approved Windows platform dependency is `golang.org/x/sys v0.47.0`; no global package/tool installation is needed. After review, build from this repository with:
 
@@ -50,7 +50,7 @@ Standalone `scan` writes the wire report JSON to stdout. `run` enrolls separatel
 
 Typed tasks use `GET /api/agent/v1/tasks` and `POST /api/agent/v1/tasks/{id}/results`. The task can contain only compiled control IDs, `apply` or `rollback`, a local backup-group `run_id`, explicit `confirmed: true`, expiration within 24 hours, and a 30..600 second safety budget. IDs cannot contain paths or Windows reserved device names. No command, writable path or replacement value comes from the network. Task work is sequential with scan/report work under the agent's spool lock. Final task receipts must acknowledge the exact task ID and result revision with HTTP 200.
 
-Writable coverage is **97 controls**: 35 registry controls (32 DWORD, two notice strings and the anonymous-pipe list), 7 native local account-policy controls, 18 native audit-policy controls, 6 native service controls, 12 native user-right controls 6 native firewall controls and one built-in Guest disabled-flag control and eleven selected WMI scalars and one compound SMB driver configuration control, independent of the 98 read-only implementations:
+Writable coverage is **99 controls**: 35 registry controls (32 DWORD, two notice strings and the anonymous-pipe list), 7 native local account-policy controls, 18 native audit-policy controls, 6 native service controls, 12 native user-right controls, 6 native firewall controls and one built-in Guest disabled-flag control and eleven selected WMI scalars and one compound SMB driver configuration control and two selected SAM password-policy flags, separate from the100 evaluator implementations:
 
 | Writable IDs | Compiled native policy |
 | --- | --- |
@@ -113,13 +113,13 @@ Coverage is identical across the three catalog files:
 | RDP hardening | 6/6 registry controls |
 | SMB/NTLM/LSA | 10/10 registry and WMI controls |
 | Defender/miscellaneous | 9/9 registry and WMI preference controls |
-| Password and lockout policy | 8/10, including Guest account flags |
+| Password and lockout policy | 10/10, including Guest and metadata-only SAM policy flags |
 | User rights assignment | 12/12 LSA controls |
 | Firewall profile configuration | 9/9 native WMI property reads |
 | Advanced audit policy | 18/18 system audit controls |
 | Service configuration | 6/6 SCM controls |
 
-Registry and WMI preference observations describe configured values; they do not prove effective domain policy, firewall enforcement, Defender runtime health or all compliance requirements. Password complexity and reversible-storage policy remain manual because the implemented NetAPI modal-policy metadata does not expose those properties; the agent does not read SAM files, hashes, passwords or credential stores. Offline assignment cache, remaining checks and signed deployment packaging remain work. WMI connection/enumeration calls have native bounded waits, but cancellation cannot interrupt a native call already in progress. Legacy YAML CIS references are draft mappings requiring licensed benchmark review. See [native provider sources](docs/native-providers.md). The existing LICENSE is preserved.
+Registry and WMI preference observations describe configured values; they do not prove effective domain policy, firewall enforcement, Defender runtime health or all compliance requirements. Password complexity and reversible-storage checks use metadata-only local SAM policy APIs; SAM file, hash, password and credential-store contents are never read. Offline assignment cache, remaining checks and signed deployment packaging remain work. WMI connection/enumeration calls have native bounded waits, but cancellation cannot interrupt a native call already in progress. Legacy YAML CIS references are draft mappings requiring licensed benchmark review. See [native provider sources](docs/native-providers.md). The existing LICENSE is preserved.
 
 ## Native local account-policy remediation
 
@@ -127,7 +127,7 @@ PWD001 and PWD003..008 now use NetUserModalsGet/Set for minimum length, lockout 
 
 These actions require local remediation opt-in, LocalSystem, explicit core risk confirmation, trusted executable/state and an independently armed recovery helper. Native version metadata must identify a workstation or non-DC server. Domain controllers and unknown product types are refused before policy backup/writes, because changing domain policy exceeds this local scope. The native setter always receives NULL servername; no remote computer is addressed.
 
-Password fields use single-field levels1001/1002/1003/1005. Windows exposes lockout settings as a three-field level3 group, so each selected field is updated from a fresh read while retaining the other two. The selected value is checked again before that write. The API has no compare-and-swap transaction: do not run concurrent local/GPO policy changes during these tasks. Windows policy constraints can reject a requested combination or ordering; failure invokes restoration of the armed changes and never reports success. Rollback restores only the saved scalar and retains the then-current unselected lockout fields. Complexity and reversible-storage audits remain manual; no credential-file provider was added.
+Password fields use single-field levels1001/1002/1003/1005. Windows exposes lockout settings as a three-field level3 group, so each selected field is updated from a fresh read while retaining the other two. The selected value is checked again before that write. The API has no compare-and-swap transaction: do not run concurrent local/GPO policy changes during these tasks. Windows policy constraints can reject a requested combination or ordering; failure invokes restoration of the armed changes and never reports success. Rollback restores only the saved scalar and retains the then-current unselected lockout fields. Complexity/reversible-storage flags use the separate selected-bit SAM provider; no credential-file provider was added.
 
 The scanner's advapi32/netapi32 functions now resolve through the existing approved x/sys system-DLL loader. No native API was invoked while implementing this source. Compiler checks passed; tests and live policy operations were not run.
 
@@ -224,3 +224,11 @@ WIN-SMB-004 snapshots the MRxSMB10 filesystem-driver startup value and the Works
 Both fields and their journaled intermediate combinations are covered by private DPAPI backups and independent recovery. No service/driver is started, stopped, loaded or unloaded, and no reboot is performed. A reboot is required for the boot configuration to take effect; rollback restores configuration, not prior driver/process memory or existing network sessions. Changes use native ChangeServiceConfig, not sc.exe or registry-key replacement. Core requires risk confirmation and preserves the baseline reboot-required flag.
 
 [Microsoft SMB client guidance](https://learn.microsoft.com/en-us/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3) was inspected for the coupled driver/dependency change. No native configuration query/write, reboot, test or service operation ran during implementation.
+
+## Password complexity and reversible-storage flags
+
+PWD002/009 inspect only local DomainPasswordInformation policy metadata through samlib.dll. No user/password enumeration, password/hash value, account secret, credential file or supplied remote server is requested. Local SAM identity comes from NetAPI; domain-controller operation is refused. Minimal domain access is read-password-policy, adding write-password-policy only for confirmed mutations. Missing exports, access failures and malformed/unavailable evidence remain errors.
+
+Each private snapshot retains only its selected Boolean flag and a local-domain fingerprint. Apply/restore rereads current policy and changes only the selected bit, retaining observed minimum length, history, ages and other flags. Independent snapshots allow both flags and existing policy scalars in one batch without clobbering each other. The native setter updates the policy structure through read/modify/write; there is no cross-process compare-and-swap, so privileged concurrent policy changes require coordination. Rechecks verify the selected result and retained fields. Disabling reversible storage does not erase prior stored credentials or change existing passwords.
+
+The policy layout and bit meanings were inspected in [Microsoft DOMAIN_PASSWORD_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/ntsecapi/ns-ntsecapi-domain_password_information) and the [MS-GPSB policy mapping](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpsb/b1306ea4-6860-4da6-811e-1fe1d1815832). Native client ABI declarations were inspected in [System Informer's original ntsam.h](https://raw.githubusercontent.com/winsiderss/systeminformer/master/phnt/include/ntsam.h); this is not a promise of a public stable Win32 API. No package was installed and no SAM query/write, credential access or test ran.

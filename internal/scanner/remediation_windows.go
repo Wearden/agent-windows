@@ -20,6 +20,9 @@ func Snapshot(plan RegistryPlan) (RegistrySnapshot, error) {
 	if err != nil || approved != plan {
 		return snapshot, errors.New("registry plan is not approved")
 	}
+	if plan.Provider == "password_flag" {
+		return snapshotPasswordFlag(plan)
+	}
 	if plan.Provider == "smb_driver" {
 		return snapshotSMBDriver(plan)
 	}
@@ -107,6 +110,9 @@ func ReplaceContext(ctx context.Context, plan RegistryPlan, want, expected Regis
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if plan.Provider == "password_flag" {
+		return replacePasswordFlag(ctx, plan, want, expected)
 	}
 	if plan.Provider == "smb_driver" {
 		return replaceSMBDriver(ctx, plan, want, expected)
