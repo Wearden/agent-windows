@@ -19,6 +19,12 @@ type RegistryPlan struct {
 const accountPolicySnapshotKind uint32 = 0x10000
 const auditPolicySnapshotKind uint32 = 0x10001
 const serviceSnapshotKind uint32 = 0x10002
+const firewallSnapshotKind uint32 = 0x10004
+
+var writableFirewall = map[string]uint32{
+	"WIN-FW-001": 1, "WIN-FW-002": 1, "WIN-FW-003": 1,
+	"WIN-FW-004": 0, "WIN-FW-005": 0, "WIN-FW-006": 0,
+}
 
 type RegistrySnapshot struct {
 	RuleID string `json:"rule_id"`
@@ -52,6 +58,14 @@ var writableAuditPolicies = map[string]uint32{
 }
 
 func Plan(ruleID string) (RegistryPlan, error) {
+	if desired, ok := writableFirewall[ruleID]; ok {
+		target := approvedTargets[ruleID]
+		check, known := firewallChecks[target.Name]
+		if target.Kind != "firewall" || target.Path != "" || !known || (check.Property != "Enabled" && check.Property != "DefaultInboundAction") {
+			return RegistryPlan{}, errors.New("compiled firewall policy target is invalid")
+		}
+		return RegistryPlan{RuleID: ruleID, Name: target.Name, Provider: target.Kind, Desired: desired}, nil
+	}
 	if _, ok := writableRights[ruleID]; ok {
 		target := approvedTargets[ruleID]
 		if target.Kind != "user_right" || target.Path != "" || !rightNames[target.Name] {
@@ -155,6 +169,8 @@ func snapshotKind(plan RegistryPlan) uint32 {
 		return serviceSnapshotKind
 	case "user_right":
 		return rightSnapshotKind
+	case "firewall":
+		return firewallSnapshotKind
 	default:
 		return 0
 	}
@@ -183,7 +199,8 @@ func ValidSnapshot(plan RegistryPlan, snapshot RegistrySnapshot) bool {
 		if !snapshot.Exists || snapshot.Kind != kind || len(snapshot.Data) != 4 {
 			return false
 		}
-		return kind != auditPolicySnapshotKind || binary.LittleEndian.Uint32(snapshot.Data) <= 3
+		value := binary.LittleEndian.Uint32(snapshot.Data)
+		return (kind != auditPolicySnapshotKind || value <= 3) && (kind != firewallSnapshotKind || value <= 1)
 	}
 	return (!snapshot.Exists && snapshot.Kind == 0 && len(snapshot.Data) == 0) || (snapshot.Exists && snapshot.Kind == kind && validRegistryData(kind, snapshot.Data))
 }
@@ -353,6 +370,9 @@ func SnapshotDescription(snapshot RegistrySnapshot) string {
 	}
 	if snapshot.Kind == rightSnapshotKind {
 		return "native user-right assignments present; exact SID set retained locally"
+	}
+	if snapshot.Kind == firewallSnapshotKind {
+		return "native local firewall profile setting retained locally"
 	}
 	if snapshot.Kind == 1 {
 		return "REG_SZ present; exact original text retained locally"

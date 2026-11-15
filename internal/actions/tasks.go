@@ -295,6 +295,9 @@ func execute(ctx context.Context, root string, j *journal) error {
 		}
 		j.Undo[id] = before
 		if j.Task.Action == "apply" {
+			if err := scanner.ApplyPrecondition(plan); err != nil {
+				return failAndRestore(root, j, "Native apply scope is unavailable or managed by an overriding policy; no mutation authorized")
+			}
 			target := scanner.DesiredSnapshot(plan, before)
 			if !scanner.ValidApplyTarget(plan, target, before) {
 				return failAndRestore(root, j, "Compiled apply target exceeds native snapshot limits or is inconsistent; no mutation authorized")
@@ -392,6 +395,11 @@ func execute(ctx context.Context, root string, j *journal) error {
 			j.Armed = append(j.Armed, id)
 			if err := store(activePath(root), j, false); err != nil {
 				return failAndRestore(root, j, "Could not persist mutation intent; batch restored")
+			}
+			if j.Task.Action == "apply" {
+				if err := scanner.ApplyPrecondition(plan); err != nil {
+					return failAndRestore(root, j, "Native apply precondition changed before write; batch restored")
+				}
 			}
 			if err := scanner.ReplaceContext(execution, plan, target, before); err != nil {
 				return failAndRestore(root, j, "Native policy write or recheck failed; batch restored where possible")
