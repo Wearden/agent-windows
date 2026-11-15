@@ -3,6 +3,7 @@
 package scanner
 
 import (
+	"context"
 	"errors"
 	"runtime"
 	"syscall"
@@ -24,6 +25,9 @@ func Snapshot(plan RegistryPlan) (RegistrySnapshot, error) {
 	}
 	if plan.Provider == "audit_policy" {
 		return snapshotAuditPolicy(plan)
+	}
+	if plan.Provider == "service" {
+		return snapshotService(plan)
 	}
 	p, err := syscall.UTF16PtrFromString(plan.Path)
 	if err != nil {
@@ -66,6 +70,13 @@ func Snapshot(plan RegistryPlan) (RegistrySnapshot, error) {
 // Replace never creates/deletes a key. Expected-state checks detect policy drift;
 // registry APIs do not provide a cross-process compare-and-swap transaction.
 func Replace(plan RegistryPlan, want, expected RegistrySnapshot) error {
+	return ReplaceContext(context.Background(), plan, want, expected)
+}
+
+func ReplaceContext(ctx context.Context, plan RegistryPlan, want, expected RegistrySnapshot) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !ValidSnapshot(plan, want) || !ValidSnapshot(plan, expected) {
 		return errors.New("invalid registry snapshot")
 	}
@@ -76,11 +87,17 @@ func Replace(plan RegistryPlan, want, expected RegistrySnapshot) error {
 	if !SameSnapshot(current, expected) {
 		return errors.New("registry value changed externally; refusing overwrite")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if plan.Provider == "password_policy" {
 		return replaceAccountPolicy(plan, want, expected)
 	}
 	if plan.Provider == "audit_policy" {
 		return replaceAuditPolicy(plan, want, expected)
+	}
+	if plan.Provider == "service" {
+		return replaceService(ctx, plan, want, expected)
 	}
 	p, err := syscall.UTF16PtrFromString(plan.Path)
 	if err != nil {

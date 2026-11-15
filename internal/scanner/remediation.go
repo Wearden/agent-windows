@@ -18,6 +18,7 @@ type RegistryPlan struct {
 
 const accountPolicySnapshotKind uint32 = 0x10000
 const auditPolicySnapshotKind uint32 = 0x10001
+const serviceSnapshotKind uint32 = 0x10002
 
 type RegistrySnapshot struct {
 	RuleID string `json:"rule_id"`
@@ -51,6 +52,9 @@ var writableAuditPolicies = map[string]uint32{
 }
 
 func Plan(ruleID string) (RegistryPlan, error) {
+	if target, ok := approvedTargets[ruleID]; ok && target.Kind == "service" && serviceNames[target.Name] && target.Path == "" {
+		return RegistryPlan{RuleID: ruleID, Name: target.Name, Provider: "service", Desired: 4}, nil
+	}
 	if ruleID == "WIN-SEC-004" || ruleID == "WIN-SEC-005" {
 		target := approvedTargets[ruleID]
 		if target.Kind != "registry" || target.Path == "" || target.Name == "" {
@@ -101,7 +105,19 @@ func RemediationHost(benchmark string) error {
 	}
 	return supportedBenchmark(benchmark)
 }
-func DesiredSnapshot(plan RegistryPlan) RegistrySnapshot {
+func DesiredSnapshot(plan RegistryPlan, before RegistrySnapshot) RegistrySnapshot {
+	if plan.Provider == "service" {
+		if !before.Exists {
+			return before
+		}
+		data := binary.LittleEndian.AppendUint32(nil, 4)
+		data = binary.LittleEndian.AppendUint32(data, 1)
+		data = binary.LittleEndian.AppendUint32(data, 0)
+		if ValidSnapshot(plan, before) {
+			data = append(data, before.Data[12:]...)
+		}
+		return RegistrySnapshot{RuleID: plan.RuleID, Exists: true, Kind: serviceSnapshotKind, Data: data}
+	}
 	if plan.RuleID == "WIN-SMB-010" {
 		return RegistrySnapshot{RuleID: plan.RuleID}
 	}
@@ -125,6 +141,8 @@ func snapshotKind(plan RegistryPlan) uint32 {
 		return accountPolicySnapshotKind
 	case "audit_policy":
 		return auditPolicySnapshotKind
+	case "service":
+		return serviceSnapshotKind
 	default:
 		return 0
 	}
@@ -134,6 +152,16 @@ func ValidSnapshot(plan RegistryPlan, snapshot RegistrySnapshot) bool {
 	kind := snapshotKind(plan)
 	if kind == 0 || snapshot.RuleID != plan.RuleID {
 		return false
+	}
+	if kind == serviceSnapshotKind {
+		if !snapshot.Exists {
+			return snapshot.Kind == 0 && len(snapshot.Data) == 0
+		}
+		if snapshot.Kind != kind || len(snapshot.Data) != 44 {
+			return false
+		}
+		start, state, delayed := binary.LittleEndian.Uint32(snapshot.Data), binary.LittleEndian.Uint32(snapshot.Data[4:]), binary.LittleEndian.Uint32(snapshot.Data[8:])
+		return start >= 2 && start <= 4 && (state == 1 || state == 4) && delayed <= 1
 	}
 	if plan.Provider != "registry" {
 		if !snapshot.Exists || snapshot.Kind != kind || len(snapshot.Data) != 4 {
@@ -183,15 +211,51 @@ func SameSnapshot(a, b RegistrySnapshot) bool {
 	return a.RuleID == b.RuleID && a.Exists == b.Exists && a.Kind == b.Kind && bytes.Equal(a.Data, b.Data)
 }
 
+// Multi-step service operations can be interrupted between their typed fields.
+// Only combinations of the two journaled endpoints can be compensated.
+func CanRestoreSnapshot(plan RegistryPlan, current, before, target RegistrySnapshot) bool {
+	if !ValidSnapshot(plan, current) || !ValidSnapshot(plan, before) || !ValidSnapshot(plan, target) {
+		return false
+	}
+	if SameSnapshot(current, before) || SameSnapshot(current, target) {
+		return true
+	}
+	if plan.Provider != "service" || !current.Exists || !before.Exists || !target.Exists {
+		return false
+	}
+	if !bytes.Equal(current.Data[12:], before.Data[12:]) || !bytes.Equal(current.Data[12:], target.Data[12:]) {
+		return false
+	}
+	for offset := 0; offset < 12; offset += 4 {
+		value := binary.LittleEndian.Uint32(current.Data[offset:])
+		if value == binary.LittleEndian.Uint32(before.Data[offset:]) || value == binary.LittleEndian.Uint32(target.Data[offset:]) {
+			continue
+		}
+		// A previously disabled but running service needs temporary manual start
+		// for exact runtime restoration; it is disabled again after starting.
+		if offset == 0 && value == 3 && ((binary.LittleEndian.Uint32(before.Data) == 4 && binary.LittleEndian.Uint32(before.Data[4:]) == 4) || (binary.LittleEndian.Uint32(target.Data) == 4 && binary.LittleEndian.Uint32(target.Data[4:]) == 4)) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func ValidApplyTarget(plan RegistryPlan, target, before RegistrySnapshot) bool {
 	if !ValidSnapshot(plan, target) || !ValidSnapshot(plan, before) {
 		return false
 	}
-	return SameSnapshot(target, DesiredSnapshot(plan)) || (SameSnapshot(target, before) && SnapshotStatus(plan, before) == wire.Pass)
+	return SameSnapshot(target, DesiredSnapshot(plan, before)) || (SameSnapshot(target, before) && SnapshotStatus(plan, before) == wire.Pass)
 }
 func SnapshotStatus(plan RegistryPlan, snapshot RegistrySnapshot) string {
 	if !ValidSnapshot(plan, snapshot) {
 		return wire.Error
+	}
+	if plan.Provider == "service" {
+		if !snapshot.Exists || (binary.LittleEndian.Uint32(snapshot.Data) == 4 && binary.LittleEndian.Uint32(snapshot.Data[4:]) == 1) {
+			return wire.Pass
+		}
+		return wire.Fail
 	}
 	if plan.RuleID == "WIN-SMB-010" {
 		if !snapshot.Exists {
@@ -226,7 +290,7 @@ func SnapshotStatus(plan RegistryPlan, snapshot RegistrySnapshot) string {
 		}
 		return wire.Fail
 	}
-	if SameSnapshot(snapshot, DesiredSnapshot(plan)) {
+	if SameSnapshot(snapshot, DesiredSnapshot(plan, snapshot)) {
 		return wire.Pass
 	}
 	return wire.Fail
@@ -240,6 +304,9 @@ func SnapshotDescription(snapshot RegistrySnapshot) string {
 	}
 	if snapshot.Kind == auditPolicySnapshotKind {
 		return "native audit success/failure policy present; original flags retained locally"
+	}
+	if snapshot.Kind == serviceSnapshotKind {
+		return "native service startup, runtime and delayed-start state retained locally"
 	}
 	if snapshot.Kind == 1 {
 		return "REG_SZ present; exact original text retained locally"

@@ -299,7 +299,7 @@ func execute(ctx context.Context, root string, j *journal) error {
 			if err = store(backupPath(root, j.Task.RunID, id), record, true); err != nil {
 				return failAndRestore(root, j, "Backup already exists or cannot be persisted; original backup was not overwritten")
 			}
-			j.Targets[id] = scanner.DesiredSnapshot(plan)
+			j.Targets[id] = scanner.DesiredSnapshot(plan, before)
 			if scanner.SnapshotStatus(plan, before) == wire.Pass {
 				j.Targets[id] = before
 			}
@@ -308,7 +308,7 @@ func execute(ctx context.Context, root string, j *journal) error {
 			if err = load(backupPath(root, j.Task.RunID, id), &record); err != nil || record.AgentID != j.AgentID || record.RunID != j.Task.RunID || !taskIdentifier.MatchString(record.TaskID) || !scanner.ValidSnapshot(plan, record.Snapshot) {
 				return failAndRestore(root, j, "Rollback backup is missing, invalid, or belongs to another agent/group")
 			}
-			if !scanner.SameSnapshot(before, scanner.DesiredSnapshot(plan)) && !scanner.SameSnapshot(before, record.Snapshot) {
+			if !scanner.SameSnapshot(before, scanner.DesiredSnapshot(plan, record.Snapshot)) && !scanner.SameSnapshot(before, record.Snapshot) {
 				return failAndRestore(root, j, "Native policy drift detected; refusing to overwrite unrelated changes")
 			}
 			j.Targets[id] = record.Snapshot
@@ -389,7 +389,7 @@ func execute(ctx context.Context, root string, j *journal) error {
 			if err := store(activePath(root), j, false); err != nil {
 				return failAndRestore(root, j, "Could not persist mutation intent; batch restored")
 			}
-			if err := scanner.Replace(plan, target, before); err != nil {
+			if err := scanner.ReplaceContext(execution, plan, target, before); err != nil {
 				return failAndRestore(root, j, "Native policy write or recheck failed; batch restored where possible")
 			}
 		}
@@ -454,7 +454,7 @@ func failAndRestore(root string, j *journal, message string, revision ...int) er
 		if scanner.SameSnapshot(current, before) {
 			continue
 		}
-		if !scanner.SameSnapshot(current, wanted) {
+		if !scanner.CanRestoreSnapshot(plan, current, before, wanted) {
 			blocked = true
 			continue
 		}
