@@ -46,17 +46,21 @@ func Snapshot(plan RegistryPlan) (RegistrySnapshot, error) {
 	if err != nil {
 		return snapshot, err
 	}
-	if kind != syscall.REG_DWORD || size != 4 {
+	if kind != snapshotKind(plan) || size > 65536 {
 		return snapshot, errors.New("refusing to replace an unexpected registry type or size")
 	}
-	data := make([]byte, 4)
+	data := make([]byte, size+2)
 	if err = syscall.RegQueryValueEx(key, n, nil, &kind, &data[0], &size); err != nil {
 		return snapshot, err
 	}
-	if kind != syscall.REG_DWORD || size != 4 {
+	if kind != snapshotKind(plan) || size > uint32(len(data)) {
 		return snapshot, errors.New("registry type or size changed while reading")
 	}
-	return RegistrySnapshot{RuleID: plan.RuleID, Exists: true, Kind: kind, Data: data}, nil
+	snapshot = RegistrySnapshot{RuleID: plan.RuleID, Exists: true, Kind: kind, Data: data[:size]}
+	if !ValidSnapshot(plan, snapshot) {
+		return RegistrySnapshot{RuleID: plan.RuleID}, errors.New("registry snapshot has an unsupported type, size or string encoding")
+	}
+	return snapshot, nil
 }
 
 // Replace never creates/deletes a key. Expected-state checks detect policy drift;

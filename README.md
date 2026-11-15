@@ -30,7 +30,7 @@ For deployment, run the reviewed binary from an elevated administrator terminal.
 .\agent.exe service uninstall --confirm
 ```
 
-Install defaults to read-only operation. To authorize the existing ten native remediation controls locally at installation, use:
+Install defaults to read-only operation. To authorize the compiled native remediation controls locally at installation, use:
 
 ```powershell
 .\agent.exe service install --server https://wearden.example --allow-remediation --confirm
@@ -50,9 +50,9 @@ Standalone `scan` writes the wire report JSON to stdout. `run` enrolls separatel
 
 Typed tasks use `GET /api/agent/v1/tasks` and `POST /api/agent/v1/tasks/{id}/results`. The task can contain only compiled control IDs, `apply` or `rollback`, a local backup-group `run_id`, explicit `confirmed: true`, expiration within 24 hours, and a 30..600 second safety budget. IDs cannot contain paths or Windows reserved device names. No command, writable path or replacement value comes from the network. Task work is sequential with scan/report work under the agent's spool lock. Final task receipts must acknowledge the exact task ID and result revision with HTTP 200.
 
-Writable coverage is **56 controls**: 31 registry controls,7 native local account-policy controls and18 native audit-policy controls, independent of the 98 read-only implementations:
+Writable coverage is **59 controls**: 34 registry controls (31 DWORD, two notice strings and the anonymous-pipe list),7 native local account-policy controls and18 native audit-policy controls, independent of the 98 read-only implementations:
 
-| Writable IDs | Fixed DWORD policy |
+| Writable IDs | Compiled native policy |
 | --- | --- |
 | WIN-SEC-001 | Require secure attention sequence |
 | WIN-SEC-002 | Hide last signed-in username |
@@ -69,8 +69,10 @@ Writable coverage is **56 controls**: 31 registry controls,7 native local accoun
 | WIN-SMB-001,002,007..009 | Reviewed NTLM/LM and anonymous-session DWORD policies |
 | WIN-RDP-001,002,005,006 | NLA, encryption, drive-redirection and password-saving policy |
 | WIN-RDP-003,004 | Positive idle/disconnection limits at most900000/60000milliseconds; preserve compliant tighter limits |
+| WIN-SEC-004,005 | The original baseline notice caption/text as REG_SZ; existing nonempty text is preserved |
+| WIN-SMB-010 | Remove NullSessionPipes, preserving an existing empty list |
 
-An entire mixed batch is rejected before writes if any requested rule is outside the compiled write allowlist. The21 expanded registry controls,7 account-policy controls and18 audit-policy controls require explicit risk confirmation in core in addition to local remediation opt-in. Driver startup (SMB004), LSA protection (DEF009), operator-supplied strings and SCM/WMI remain outside the current write paths. Seven local account-policy scalars use NetUserModalsSet as described below. Only existing HKLM keys with DWORD or absent values are eligible. The agent never creates or deletes registry keys and refuses unexpected existing types. It preserves exact original DWORD bytes/type or value absence, writes the fixed compiled baseline only when needed, flushes and natively rechecks the result. Positive timeout values already below the maximum remain unchanged; zero is treated as disabled and is corrected. These findings attest registry configuration, not effective service activation, authentication compatibility or successful future logins. No service restart or reboot is issued. Rollback restores the named group's exact local snapshot, including deleting a value that did not originally exist. Unexpected external policy changes are refused rather than overwritten.
+An entire mixed batch is rejected before writes if any requested rule is outside the compiled write allowlist. The21 expanded DWORD controls, three notice/pipe-list controls,7 account-policy controls and18 audit-policy controls require explicit risk confirmation in core in addition to local remediation opt-in. Driver startup (SMB004), LSA protection (DEF009), operator-supplied strings and SCM/WMI remain outside the current write paths. Seven local account-policy scalars use NetUserModalsSet as described below. Only existing HKLM keys are eligible. Each compiled target accepts its exact expected type (DWORD, notice REG_SZ or pipe-list REG_MULTI_SZ) or value absence. The agent never creates or deletes registry keys and refuses unexpected existing types. It preserves exact original bytes/type or value absence, writes the fixed compiled baseline only when needed, flushes and natively rechecks the result. Positive timeout values already below the maximum remain unchanged; zero is treated as disabled and is corrected. These findings attest registry configuration, not effective service activation, authentication compatibility or successful future logins. No service restart or reboot is issued. Rollback restores the named group's exact local snapshot, including deleting a value that did not originally exist. Unexpected external policy changes are refused rather than overwritten.
 
 Native task mutation/restoration requires **LocalSystem enrollment and daemon identity**. Interactive administrator runs remain read-only. Current-user DPAPI under an interactive administrator does not isolate journals from that same user's unelevated processes, so that configuration is refused for mutation. Before any mutation, original backups and the mutation-intent journal are persisted with current-user DPAPI under `spool/tasks`, owned by SYSTEM/administrators with protected inheritable NTFS ACLs. Network paths and filesystem-link traversal are rejected. Encrypted state commits use synced temporary files and write-through Windows rename. Original backup files are exclusive and never overwritten by a later task. Core receives only safe before/after descriptors and `run_id/rule_id` backup locators, never local snapshot contents or filesystem paths.
 
@@ -141,3 +143,13 @@ SeSecurityPrivilege is enabled only on a temporary self-impersonation token whil
 Plans now distinguish registry, password_policy and audit_policy providers internally. Existing registry/account backup tags are unchanged. Core receives safe state descriptions and backup locators, never the private backup objects. No AuditSetSystemPolicy, privilege adjustment, helper or live scan was executed during implementation. Windows amd64/386 and Linux package-tree compilation passed; tests were not run.
 
 Primary sources inspected2026-11-15: [AuditSetSystemPolicy](https://learn.microsoft.com/en-us/windows/win32/api/ntsecapi/nf-ntsecapi-auditsetsystempolicy), [AUDIT_POLICY_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/ntsecapi/ns-ntsecapi-audit_policy_information), [AdjustTokenPrivileges](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-adjusttokenprivileges), [ImpersonateSelf](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-impersonateself), [RevertToSelf](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-reverttoself).
+
+## Notice and anonymous-pipe policy restoration
+
+SEC004/005 use the same fixed English notice strings as all three retained baselines. Nonempty well-formed existing REG_SZ text is already compliant and remains unchanged. No request may supply notice text, paths or registry value types. SMB010 removes the fixed NullSessionPipes value; an absent value or well-formed empty list remains compliant. Removal can affect applications relying on anonymous named-pipe access, so core requires explicit risk confirmation.
+
+Before mutation, each exact original value or absence is saved through the existing SYSTEM-only DPAPI engine. Restoration preserves byte order, UTF-16 encoding, list order and type. Strings/lists are bounded to64 KiB; odd byte lengths, invalid surrogate pairs, missing terminators, embedded empty list elements and unexpected types are refused before mutation. Empty MULTI_SZ accepts the documented single empty terminator as well as the conventional double terminator. Text and list contents never appear in change descriptors or core submissions. Only fixed shape descriptions are sent.
+
+The existing independent watchdog, elapsed-time lease, journal validation and drift refusal apply to these targets. Native rechecks establish stored registry state only, not immediate authentication/session behavior or loaded service state. No service restart is performed. The prior DWORD/account/audit backup tags remain unchanged.
+
+Registry type and termination handling was inspected against [Registry value types](https://learn.microsoft.com/en-us/windows/win32/sysinfo/registry-value-types) and [RegSetValueExW](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regsetvalueexw). No new dependency was added. Compiler checks do not prove runtime behavior; no tests or native changes were executed.

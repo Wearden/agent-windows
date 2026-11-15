@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"unicode/utf16"
 
 	"github.com/Wearden/proto/wire"
 )
@@ -11,6 +12,8 @@ import (
 type RegistryPlan struct {
 	RuleID, Path, Name, Provider string
 	Desired                      uint32
+	ValueKind                    uint32
+	Text                         string
 }
 
 const accountPolicySnapshotKind uint32 = 0x10000
@@ -23,8 +26,7 @@ type RegistrySnapshot struct {
 	Data   []byte `json:"data"`
 }
 
-// Exact reversible DWORD policies only. Drivers, firmware-backed protection,
-// operator-supplied strings require separate restore plans.
+// Only compiled policies are writable; payloads cannot supply values or paths.
 var writableDWORDs = map[string]uint32{
 	"WIN-SEC-001": 0, "WIN-SEC-002": 1, "WIN-SEC-006": 1, "WIN-SEC-007": 1, "WIN-SEC-008": 0,
 	"WIN-SEC-009": 1, "WIN-SEC-010": 0, "WIN-SEC-019": 1, "WIN-DEF-006": 255, "WIN-DEF-008": 1,
@@ -49,6 +51,24 @@ var writableAuditPolicies = map[string]uint32{
 }
 
 func Plan(ruleID string) (RegistryPlan, error) {
+	if ruleID == "WIN-SEC-004" || ruleID == "WIN-SEC-005" {
+		target := approvedTargets[ruleID]
+		if target.Kind != "registry" || target.Path == "" || target.Name == "" {
+			return RegistryPlan{}, errors.New("compiled notice target is invalid")
+		}
+		text := "Authorised use only"
+		if ruleID == "WIN-SEC-005" {
+			text = "This system is for authorised use only. Activity is monitored and logged."
+		}
+		return RegistryPlan{RuleID: ruleID, Path: target.Path, Name: target.Name, Provider: "registry", ValueKind: 1, Text: text}, nil
+	}
+	if ruleID == "WIN-SMB-010" {
+		target := approvedTargets[ruleID]
+		if target.Kind != "anonymous_pipes" || target.Path != "" || target.Name != "NullSessionPipes" {
+			return RegistryPlan{}, errors.New("compiled anonymous-pipe target is invalid")
+		}
+		return RegistryPlan{RuleID: ruleID, Path: `SYSTEM\CurrentControlSet\Services\LanManServer\Parameters`, Name: target.Name, Provider: "registry", ValueKind: 7}, nil
+	}
 	if value, ok := writableAuditPolicies[ruleID]; ok {
 		target := approvedTargets[ruleID]
 		if target.Kind != "audit_policy" || target.Path != "" || auditNames[target.Name] == 0 {
@@ -71,7 +91,7 @@ func Plan(ruleID string) (RegistryPlan, error) {
 	if target.Kind != "registry" || target.Path == "" || target.Name == "" {
 		return RegistryPlan{}, errors.New("compiled remediation target is invalid")
 	}
-	return RegistryPlan{RuleID: ruleID, Path: target.Path, Name: target.Name, Desired: value, Provider: target.Kind}, nil
+	return RegistryPlan{RuleID: ruleID, Path: target.Path, Name: target.Name, Desired: value, Provider: target.Kind, ValueKind: 4}, nil
 }
 
 func KnownRule(ruleID string) bool { _, ok := approvedTargets[ruleID]; return ok }
@@ -82,6 +102,16 @@ func RemediationHost(benchmark string) error {
 	return supportedBenchmark(benchmark)
 }
 func DesiredSnapshot(plan RegistryPlan) RegistrySnapshot {
+	if plan.RuleID == "WIN-SMB-010" {
+		return RegistrySnapshot{RuleID: plan.RuleID}
+	}
+	if plan.Provider == "registry" && plan.ValueKind == 1 {
+		var data []byte
+		for _, word := range append(utf16.Encode([]rune(plan.Text)), 0) {
+			data = binary.LittleEndian.AppendUint16(data, word)
+		}
+		return RegistrySnapshot{RuleID: plan.RuleID, Exists: true, Kind: 1, Data: data}
+	}
 	data := make([]byte, 4)
 	binary.LittleEndian.PutUint32(data, plan.Desired)
 	return RegistrySnapshot{RuleID: plan.RuleID, Exists: true, Kind: snapshotKind(plan), Data: data}
@@ -90,7 +120,7 @@ func DesiredSnapshot(plan RegistryPlan) RegistrySnapshot {
 func snapshotKind(plan RegistryPlan) uint32 {
 	switch plan.Provider {
 	case "registry":
-		return 4
+		return plan.ValueKind
 	case "password_policy":
 		return accountPolicySnapshotKind
 	case "audit_policy":
@@ -105,13 +135,49 @@ func ValidSnapshot(plan RegistryPlan, snapshot RegistrySnapshot) bool {
 	if kind == 0 || snapshot.RuleID != plan.RuleID {
 		return false
 	}
-	if kind != 4 {
+	if plan.Provider != "registry" {
 		if !snapshot.Exists || snapshot.Kind != kind || len(snapshot.Data) != 4 {
 			return false
 		}
 		return kind != auditPolicySnapshotKind || binary.LittleEndian.Uint32(snapshot.Data) <= 3
 	}
-	return snapshot.RuleID == plan.RuleID && ((!snapshot.Exists && snapshot.Kind == 0 && len(snapshot.Data) == 0) || (snapshot.Exists && snapshot.Kind == 4 && len(snapshot.Data) == 4))
+	return (!snapshot.Exists && snapshot.Kind == 0 && len(snapshot.Data) == 0) || (snapshot.Exists && snapshot.Kind == kind && validRegistryData(kind, snapshot.Data))
+}
+
+func validRegistryData(kind uint32, data []byte) bool {
+	if kind == 4 {
+		return len(data) == 4
+	}
+	if (kind != 1 && kind != 7) || len(data) < 2 || len(data) > 65536 || len(data)%2 != 0 {
+		return false
+	}
+	words := make([]uint16, len(data)/2)
+	for i := range words {
+		words[i] = binary.LittleEndian.Uint16(data[i*2:])
+	}
+	if words[len(words)-1] != 0 {
+		return false
+	}
+	for i := 0; i < len(words)-1; i++ {
+		word := words[i]
+		if word >= 0xd800 && word <= 0xdbff {
+			if i+1 >= len(words)-1 || words[i+1] < 0xdc00 || words[i+1] > 0xdfff {
+				return false
+			}
+			i++
+		} else if word >= 0xdc00 && word <= 0xdfff {
+			return false
+		} else if word == 0 {
+			if kind == 1 || (i != len(words)-2 && (i == 0 || words[i+1] == 0)) {
+				return false
+			}
+		}
+	}
+	// Empty MULTI_SZ may have one or two NULs; nonempty lists require two.
+	if kind == 7 && len(words) > 1 && words[len(words)-2] != 0 {
+		return false
+	}
+	return true
 }
 func SameSnapshot(a, b RegistrySnapshot) bool {
 	return a.RuleID == b.RuleID && a.Exists == b.Exists && a.Kind == b.Kind && bytes.Equal(a.Data, b.Data)
@@ -124,8 +190,28 @@ func ValidApplyTarget(plan RegistryPlan, target, before RegistrySnapshot) bool {
 	return SameSnapshot(target, DesiredSnapshot(plan)) || (SameSnapshot(target, before) && SnapshotStatus(plan, before) == wire.Pass)
 }
 func SnapshotStatus(plan RegistryPlan, snapshot RegistrySnapshot) string {
-	if !snapshot.Exists || !ValidSnapshot(plan, snapshot) {
+	if !ValidSnapshot(plan, snapshot) {
 		return wire.Error
+	}
+	if plan.RuleID == "WIN-SMB-010" {
+		if !snapshot.Exists {
+			return wire.Pass
+		}
+		for _, b := range snapshot.Data {
+			if b != 0 {
+				return wire.Fail
+			}
+		}
+		return wire.Pass
+	}
+	if !snapshot.Exists {
+		return wire.Error
+	}
+	if plan.ValueKind == 1 {
+		if len(snapshot.Data) > 2 {
+			return wire.Pass
+		}
+		return wire.Fail
 	}
 	switch plan.RuleID {
 	case "WIN-SEC-003", "WIN-RDP-003", "WIN-RDP-004", "WIN-PWD-003", "WIN-PWD-006":
@@ -154,6 +240,12 @@ func SnapshotDescription(snapshot RegistrySnapshot) string {
 	}
 	if snapshot.Kind == auditPolicySnapshotKind {
 		return "native audit success/failure policy present; original flags retained locally"
+	}
+	if snapshot.Kind == 1 {
+		return "REG_SZ present; exact original text retained locally"
+	}
+	if snapshot.Kind == 7 {
+		return "REG_MULTI_SZ present; exact original list retained locally"
 	}
 	return "REG_DWORD present (4 bytes); exact content retained locally"
 }
