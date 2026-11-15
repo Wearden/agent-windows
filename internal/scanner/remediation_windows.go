@@ -20,6 +20,9 @@ func Snapshot(plan RegistryPlan) (RegistrySnapshot, error) {
 	if err != nil || approved != plan {
 		return snapshot, errors.New("registry plan is not approved")
 	}
+	if plan.Provider == "wmi" {
+		return snapshotWMI(plan)
+	}
 	if plan.Provider == "guest_account" {
 		return snapshotGuest(plan)
 	}
@@ -48,6 +51,9 @@ func Snapshot(plan RegistryPlan) (RegistrySnapshot, error) {
 	}
 	var key syscall.Handle
 	if err = syscall.RegOpenKeyEx(syscall.HKEY_LOCAL_MACHINE, p, 0, 0x0001|0x0100, &key); err != nil {
+		if plan.RuleID == "WIN-DEF-007" && (err == syscall.ERROR_FILE_NOT_FOUND || err == syscall.ERROR_PATH_NOT_FOUND) {
+			return snapshot, nil
+		}
 		return snapshot, err
 	}
 	defer syscall.RegCloseKey(key)
@@ -98,6 +104,9 @@ func ReplaceContext(ctx context.Context, plan RegistryPlan, want, expected Regis
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if plan.Provider == "wmi" {
+		return replaceWMI(ctx, plan, want, expected)
 	}
 	if plan.Provider == "guest_account" {
 		return replaceGuest(ctx, plan, want, expected)

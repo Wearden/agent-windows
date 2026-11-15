@@ -19,6 +19,7 @@ import (
 
 // Prefix layouts follow the official WinSDK WbemCli.h C vtables. No Invoke,
 // ExecMethod, scripting, arbitrary namespace, query, or credentials are exposed.
+// Reviewed mutations use only the separate mandatory partial-update path.
 type unknownVtbl struct{ QueryInterface, AddRef, Release uintptr }
 type locatorVtbl struct {
 	unknownVtbl
@@ -61,6 +62,7 @@ var wmiInit sync.Once
 var wmiInitError error
 var initializeCOM, uninitializeCOM, initializeSecurity, createCOM, setProxy, allocBSTR, freeBSTR, clearVariant *syscall.Proc
 var stringLen, arrayDim, arrayLBound, arrayUBound, arrayElement *syscall.Proc
+var arrayCreateVector, arrayPutElement, arrayDestroy *syscall.Proc
 var securityOnce sync.Once
 var securityError error
 
@@ -99,7 +101,7 @@ func initializeWMI() error {
 			}
 			*destination = proc
 		}
-		for name, destination := range map[string]**syscall.Proc{"SysAllocStringLen": &allocBSTR, "SysFreeString": &freeBSTR, "VariantClear": &clearVariant, "SysStringLen": &stringLen, "SafeArrayGetDim": &arrayDim, "SafeArrayGetLBound": &arrayLBound, "SafeArrayGetUBound": &arrayUBound, "SafeArrayGetElement": &arrayElement} {
+		for name, destination := range map[string]**syscall.Proc{"SysAllocStringLen": &allocBSTR, "SysFreeString": &freeBSTR, "VariantClear": &clearVariant, "SysStringLen": &stringLen, "SafeArrayGetDim": &arrayDim, "SafeArrayGetLBound": &arrayLBound, "SafeArrayGetUBound": &arrayUBound, "SafeArrayGetElement": &arrayElement, "SafeArrayCreateVector": &arrayCreateVector, "SafeArrayPutElement": &arrayPutElement, "SafeArrayDestroy": &arrayDestroy} {
 			proc, err := aut.FindProc(name)
 			if err != nil {
 				wmiInitError = err
@@ -144,6 +146,10 @@ func secureProxy(object unsafe.Pointer) error {
 }
 
 func wmiValue(name string) (string, error) {
+	return withWMIScalar(name, nil)
+}
+
+func withWMIScalar(name string, operation func(*comServices, *comClass, variant, uint32) error) (string, error) {
 	check, ok := wmiChecks[name]
 	firewall, isFirewall := firewallChecks[name]
 	if isFirewall {
@@ -206,6 +212,11 @@ func wmiValue(name string) (string, error) {
 	}
 	defer freeBSTR.Call(language)
 	queryText := "SELECT " + check.Property + " FROM " + check.Class
+	if operation != nil {
+		// Retain native instance keys for PutInstance; only the selected scalar
+		// and relative-identity fingerprint enter the private snapshot.
+		queryText = "SELECT * FROM " + check.Class
+	}
 	if isFirewall {
 		queryText += " WHERE Name = '" + firewall.Profile + "'"
 	}
@@ -260,6 +271,9 @@ func wmiValue(name string) (string, error) {
 	}
 	if count != 0 || result != 1 {
 		return "", errors.New("WMI singleton result is ambiguous or timed out")
+	}
+	if operation != nil {
+		return "", operation(services, object, value, cimType)
 	}
 	if isFirewall {
 		if check.Property == "LogMaxSizeKilobytes" {

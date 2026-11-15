@@ -59,6 +59,22 @@ var writableAuditPolicies = map[string]uint32{
 }
 
 func Plan(ruleID string) (RegistryPlan, error) {
+	if desired, ok := writableWMI[ruleID]; ok {
+		target := approvedTargets[ruleID]
+		if _, known := wmiChecks[target.Name]; target.Kind != "wmi" || target.Path != "" || !known {
+			return RegistryPlan{}, errors.New("invalid compiled WMI target")
+		}
+		return RegistryPlan{RuleID: ruleID, Name: target.Name, Provider: target.Kind, Desired: desired}, nil
+	}
+
+	if ruleID == "WIN-DEF-007" {
+		target := approvedTargets[ruleID]
+		if target.Kind != "installer_policy" || target.Path != "" || target.Name != "AlwaysInstallElevated" {
+			return RegistryPlan{}, errors.New("invalid compiled installer policy target")
+		}
+		return RegistryPlan{RuleID: ruleID, Path: `SOFTWARE\Policies\Microsoft\Windows\Installer`, Name: target.Name, Provider: "registry", ValueKind: 4}, nil
+	}
+
 	if ruleID == "WIN-PWD-010" {
 		target := approvedTargets[ruleID]
 		if target.Kind != "guest_account" || target.Path != "" || target.Name != "Guest" {
@@ -136,6 +152,15 @@ func RemediationHost(benchmark string) error {
 	return supportedBenchmark(benchmark)
 }
 func DesiredSnapshot(plan RegistryPlan, before RegistrySnapshot) RegistrySnapshot {
+	if plan.Provider == "wmi" {
+		if !ValidSnapshot(plan, before) {
+			return RegistrySnapshot{RuleID: plan.RuleID}
+		}
+		data := append([]byte(nil), before.Data...)
+		binary.LittleEndian.PutUint64(data[8:], uint64(plan.Desired))
+		return RegistrySnapshot{RuleID: plan.RuleID, Exists: true, Kind: wmiSnapshotKind, Data: data}
+	}
+
 	if plan.Provider == "user_right" {
 		return desiredRightSnapshot(plan, before)
 	}
@@ -191,6 +216,8 @@ func snapshotKind(plan RegistryPlan) uint32 {
 		return firewallSnapshotKind
 	case "guest_account":
 		return guestSnapshotKind
+	case "wmi":
+		return wmiSnapshotKind
 	default:
 		return 0
 	}
@@ -200,6 +227,9 @@ func ValidSnapshot(plan RegistryPlan, snapshot RegistrySnapshot) bool {
 	kind := snapshotKind(plan)
 	if kind == 0 || snapshot.RuleID != plan.RuleID {
 		return false
+	}
+	if kind == wmiSnapshotKind {
+		return snapshot.Exists && snapshot.Kind == kind && validWMIData(plan, snapshot.Data)
 	}
 	if kind == guestSnapshotKind {
 		return snapshot.Exists && snapshot.Kind == kind && len(snapshot.Data) == 36 && binary.LittleEndian.Uint32(snapshot.Data)&0x200 != 0 && !bytes.Equal(snapshot.Data[4:], make([]byte, 32))
@@ -311,6 +341,9 @@ func SnapshotStatus(plan RegistryPlan, snapshot RegistrySnapshot) string {
 	if !ValidSnapshot(plan, snapshot) {
 		return wire.Error
 	}
+	if plan.RuleID == "WIN-DEF-007" && !snapshot.Exists {
+		return wire.Pass
+	}
 	if plan.Provider == "user_right" {
 		actual, err := decodeRightSIDs(snapshot.Data)
 		if err != nil {
@@ -382,6 +415,9 @@ func SnapshotStatus(plan RegistryPlan, snapshot RegistrySnapshot) string {
 func SnapshotDescription(snapshot RegistrySnapshot) string {
 	if !snapshot.Exists {
 		return "value absent"
+	}
+	if snapshot.Kind == wmiSnapshotKind {
+		return "native selected WMI scalar and instance fingerprint retained privately"
 	}
 	if snapshot.Kind == guestSnapshotKind {
 		return "local built-in Guest flags and identity fingerprint retained privately"
