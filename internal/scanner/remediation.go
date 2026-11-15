@@ -61,10 +61,16 @@ var writableAuditPolicies = map[string]uint32{
 func Plan(ruleID string) (RegistryPlan, error) {
 	if desired, ok := writableWMI[ruleID]; ok {
 		target := approvedTargets[ruleID]
-		if _, known := wmiChecks[target.Name]; target.Kind != "wmi" || target.Path != "" || !known {
+		_, known := wmiChecks[target.Name]
+		if firewall, ok := firewallChecks[target.Name]; ok {
+			known = target.Kind == "firewall" && (firewall.Property == "LogBlocked" || firewall.Property == "LogMaxSizeKilobytes")
+		} else {
+			known = known && target.Kind == "wmi"
+		}
+		if target.Path != "" || !known {
 			return RegistryPlan{}, errors.New("invalid compiled WMI target")
 		}
-		return RegistryPlan{RuleID: ruleID, Name: target.Name, Provider: target.Kind, Desired: desired}, nil
+		return RegistryPlan{RuleID: ruleID, Name: target.Name, Provider: "wmi", Desired: desired}, nil
 	}
 
 	if ruleID == "WIN-DEF-007" {
@@ -341,6 +347,14 @@ func SnapshotStatus(plan RegistryPlan, snapshot RegistrySnapshot) string {
 	if !ValidSnapshot(plan, snapshot) {
 		return wire.Error
 	}
+	if plan.RuleID == "WIN-FW-009" {
+		value := binary.LittleEndian.Uint64(snapshot.Data[8:])
+		if value != ^uint64(0) && value >= uint64(plan.Desired) {
+			return wire.Pass
+		}
+		return wire.Fail
+	}
+
 	if plan.RuleID == "WIN-DEF-007" && !snapshot.Exists {
 		return wire.Pass
 	}

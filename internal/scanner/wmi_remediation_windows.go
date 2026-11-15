@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -69,9 +70,18 @@ func partialWMIContext(property string) (*comContext, error) {
 	return ctx, nil
 }
 
-func rawWMISnapshot(plan RegistryPlan, object *comClass, value variant, cim uint32) (RegistrySnapshot, error) {
+func rawWMISnapshot(services *comServices, plan RegistryPlan, object *comClass, value variant, cim uint32) (RegistrySnapshot, error) {
 	var scalar uint64
 	switch value.Kind {
+	case 8:
+		text, err := readBSTR(value.Data[0])
+		if err != nil {
+			return RegistrySnapshot{}, err
+		}
+		scalar, err = strconv.ParseUint(text, 0, 64)
+		if err != nil {
+			return RegistrySnapshot{}, errors.New("invalid native WMI unsigned scalar")
+		}
 	case 11:
 		b := int16(value.Data[0])
 		if b != 0 && b != -1 {
@@ -103,9 +113,15 @@ func rawWMISnapshot(plan RegistryPlan, object *comClass, value variant, cim uint
 		return RegistrySnapshot{}, errors.New("WMI instance identity is unavailable")
 	}
 	identity, err := readBSTR(path.Data[0])
-	check := wmiChecks[plan.Name]
+	check := mutationWMICheck(plan)
 	if err != nil || !(strings.HasPrefix(identity, check.Class+".") || identity == check.Class+"=@") {
 		return RegistrySnapshot{}, errors.New("WMI relative instance identity requires review")
+	}
+	if plan.RuleID == "WIN-FW-007" || plan.RuleID == "WIN-FW-008" {
+		label, err := firewallEnum(services, check.Property, uint32(plan.Desired))
+		if err != nil || label != "True" {
+			return RegistrySnapshot{}, errors.New("firewall provider does not map the compiled logging value to True")
+		}
 	}
 	fingerprint := sha256.Sum256([]byte(check.Namespace + "\x00" + identity))
 	data := binary.LittleEndian.AppendUint32(nil, uint32(value.Kind))
@@ -120,9 +136,9 @@ func rawWMISnapshot(plan RegistryPlan, object *comClass, value variant, cim uint
 }
 
 func snapshotWMI(plan RegistryPlan) (snapshot RegistrySnapshot, err error) {
-	_, err = withWMIScalar(plan.Name, func(_ *comServices, object *comClass, value variant, cim uint32) error {
+	_, err = withWMIScalar(plan.Name, func(services *comServices, object *comClass, value variant, cim uint32) error {
 		var err error
-		snapshot, err = rawWMISnapshot(plan, object, value, cim)
+		snapshot, err = rawWMISnapshot(services, plan, object, value, cim)
 		return err
 	})
 	return snapshot, err
@@ -133,19 +149,14 @@ func replaceWMI(ctx context.Context, plan RegistryPlan, want, expected RegistryS
 		return errors.New("WMI replacement must retain the original type and instance identity")
 	}
 	_, err := withWMIScalar(plan.Name, func(services *comServices, object *comClass, value variant, cim uint32) error {
-		current, err := rawWMISnapshot(plan, object, value, cim)
+		current, err := rawWMISnapshot(services, plan, object, value, cim)
 		if err != nil || !SameSnapshot(current, expected) {
 			return errors.New("WMI selected property or instance changed externally")
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		property := wmiChecks[plan.Name].Property
-		partial, err := partialWMIContext(property)
-		if err != nil {
-			return err
-		}
-		defer releaseCOM(unsafe.Pointer(partial))
+		property := mutationWMICheck(plan).Property
 		wide, err := syscall.UTF16PtrFromString(property)
 		if err != nil {
 			return err
@@ -155,6 +166,23 @@ func replaceWMI(ctx context.Context, plan RegistryPlan, want, expected RegistryS
 		if value.Kind == 11 && number == 1 {
 			updated.Data[0] = 0xffff
 		}
+		if value.Kind == 8 {
+			text, err := bstr(strconv.FormatUint(number, 10))
+			if err != nil {
+				return err
+			}
+			updated.Data[0] = text
+			defer freeBSTR.Call(text)
+		}
+		if _, nativeMethod := wmiChecks[plan.Name]; nativeMethod {
+			return setCompiledWMIScalar(ctx, services, plan, updated, cim)
+		}
+		partial, err := partialWMIContext(property)
+		if err != nil {
+			return err
+		}
+		defer releaseCOM(unsafe.Pointer(partial))
+
 		result, _, _ := syscall.SyscallN(object.Vtbl.Put, uintptr(unsafe.Pointer(object)), uintptr(unsafe.Pointer(wide)), 0, uintptr(unsafe.Pointer(&updated)), uintptr(cim))
 		runtime.KeepAlive(wide)
 		runtime.KeepAlive(updated)

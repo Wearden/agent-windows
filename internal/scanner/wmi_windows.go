@@ -17,9 +17,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Prefix layouts follow the official WinSDK WbemCli.h C vtables. No Invoke,
-// ExecMethod, scripting, arbitrary namespace, query, or credentials are exposed.
-// Reviewed mutations use only the separate mandatory partial-update path.
+// Prefix layouts follow the official WinSDK WbemCli.h C vtables. No scripting,
+// arbitrary namespace/query/method or supplied credentials are exposed.
+// Mutations use compiled scalar setters or mandatory one-property updates.
 type unknownVtbl struct{ QueryInterface, AddRef, Release uintptr }
 type locatorVtbl struct {
 	unknownVtbl
@@ -31,6 +31,7 @@ type servicesVtbl struct {
 	PutClass, PutClassAsync, DeleteClass, DeleteClassAsync, CreateClassEnum, CreateClassEnumAsync                   uintptr
 	PutInstance, PutInstanceAsync, DeleteInstance, DeleteInstanceAsync, CreateInstanceEnum, CreateInstanceEnumAsync uintptr
 	ExecQuery                                                                                                       uintptr
+	ExecQueryAsync, ExecNotificationQuery, ExecNotificationQueryAsync, ExecMethod                                   uintptr
 }
 type enumVtbl struct {
 	unknownVtbl
@@ -38,8 +39,9 @@ type enumVtbl struct {
 }
 type classVtbl struct {
 	unknownVtbl
-	GetQualifierSet, Get                                                                   uintptr
-	Put, Delete, GetNames, BeginEnumeration, Next, EndEnumeration, GetPropertyQualifierSet uintptr
+	GetQualifierSet, Get                                                                                          uintptr
+	Put, Delete, GetNames, BeginEnumeration, Next, EndEnumeration, GetPropertyQualifierSet                        uintptr
+	Clone, GetObjectText, SpawnDerivedClass, SpawnInstance, CompareTo, GetPropertyOrigin, InheritsFrom, GetMethod uintptr
 }
 type qualifierVtbl struct {
 	unknownVtbl
@@ -288,6 +290,9 @@ func withWMIScalar(name string, operation func(*comServices, *comClass, variant,
 			n, err := strconv.ParseUint(text, 0, 64)
 			if err != nil {
 				return "", errors.New("invalid firewall log size")
+			}
+			if n == ^uint64(0) {
+				return "", errors.New("firewall log size is NotConfigured; effective limit requires review")
 			}
 			return strconv.FormatUint(n, 10), nil
 		}
