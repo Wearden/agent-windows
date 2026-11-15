@@ -20,6 +20,9 @@ func Snapshot(plan RegistryPlan) (RegistrySnapshot, error) {
 	if err != nil || approved != plan {
 		return snapshot, errors.New("registry plan is not approved")
 	}
+	if plan.Provider == "guest_account" {
+		return snapshotGuest(plan)
+	}
 	if plan.Provider == "password_policy" {
 		return snapshotAccountPolicy(plan)
 	}
@@ -95,6 +98,9 @@ func ReplaceContext(ctx context.Context, plan RegistryPlan, want, expected Regis
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if plan.Provider == "guest_account" {
+		return replaceGuest(ctx, plan, want, expected)
 	}
 	if plan.Provider == "password_policy" {
 		return replaceAccountPolicy(plan, want, expected)

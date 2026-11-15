@@ -20,6 +20,7 @@ const accountPolicySnapshotKind uint32 = 0x10000
 const auditPolicySnapshotKind uint32 = 0x10001
 const serviceSnapshotKind uint32 = 0x10002
 const firewallSnapshotKind uint32 = 0x10004
+const guestSnapshotKind uint32 = 0x10005
 
 var writableFirewall = map[string]uint32{
 	"WIN-FW-001": 1, "WIN-FW-002": 1, "WIN-FW-003": 1,
@@ -58,6 +59,14 @@ var writableAuditPolicies = map[string]uint32{
 }
 
 func Plan(ruleID string) (RegistryPlan, error) {
+	if ruleID == "WIN-PWD-010" {
+		target := approvedTargets[ruleID]
+		if target.Kind != "guest_account" || target.Path != "" || target.Name != "Guest" {
+			return RegistryPlan{}, errors.New("invalid compiled Guest account target")
+		}
+		return RegistryPlan{RuleID: ruleID, Name: target.Name, Provider: target.Kind}, nil
+	}
+
 	if desired, ok := writableFirewall[ruleID]; ok {
 		target := approvedTargets[ruleID]
 		check, known := firewallChecks[target.Name]
@@ -142,6 +151,15 @@ func DesiredSnapshot(plan RegistryPlan, before RegistrySnapshot) RegistrySnapsho
 		}
 		return RegistrySnapshot{RuleID: plan.RuleID, Exists: true, Kind: serviceSnapshotKind, Data: data}
 	}
+	if plan.Provider == "guest_account" {
+		if !ValidSnapshot(plan, before) {
+			return RegistrySnapshot{RuleID: plan.RuleID}
+		}
+		data := append([]byte(nil), before.Data...)
+		binary.LittleEndian.PutUint32(data, binary.LittleEndian.Uint32(data)|2)
+		return RegistrySnapshot{RuleID: plan.RuleID, Exists: true, Kind: guestSnapshotKind, Data: data}
+	}
+
 	if plan.RuleID == "WIN-SMB-010" {
 		return RegistrySnapshot{RuleID: plan.RuleID}
 	}
@@ -171,6 +189,8 @@ func snapshotKind(plan RegistryPlan) uint32 {
 		return rightSnapshotKind
 	case "firewall":
 		return firewallSnapshotKind
+	case "guest_account":
+		return guestSnapshotKind
 	default:
 		return 0
 	}
@@ -181,6 +201,10 @@ func ValidSnapshot(plan RegistryPlan, snapshot RegistrySnapshot) bool {
 	if kind == 0 || snapshot.RuleID != plan.RuleID {
 		return false
 	}
+	if kind == guestSnapshotKind {
+		return snapshot.Exists && snapshot.Kind == kind && len(snapshot.Data) == 36 && binary.LittleEndian.Uint32(snapshot.Data)&0x200 != 0 && !bytes.Equal(snapshot.Data[4:], make([]byte, 32))
+	}
+
 	if kind == rightSnapshotKind {
 		_, err := decodeRightSIDs(snapshot.Data)
 		return snapshot.Exists && snapshot.Kind == kind && err == nil
@@ -359,6 +383,10 @@ func SnapshotDescription(snapshot RegistrySnapshot) string {
 	if !snapshot.Exists {
 		return "value absent"
 	}
+	if snapshot.Kind == guestSnapshotKind {
+		return "local built-in Guest flags and identity fingerprint retained privately"
+	}
+
 	if snapshot.Kind == accountPolicySnapshotKind {
 		return "native account-policy scalar present; exact value retained locally"
 	}

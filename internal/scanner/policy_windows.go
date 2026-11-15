@@ -29,10 +29,6 @@ var queryService = advapi.NewProc("QueryServiceConfigW")
 
 type modals0 struct{ MinLength, MaxAge, MinAge, ForceLogoff, History uint32 }
 type modals3 struct{ Duration, Window, Threshold uint32 }
-type userInfo20 struct {
-	Name, FullName, Comment *uint16
-	Flags, RID              uint32
-}
 type unicodeString struct {
 	Length, MaxLength uint16
 	Buffer            *uint16
@@ -127,28 +123,11 @@ func passwordPolicy(name string) (string, error) {
 }
 
 func guestEnabled() (string, error) {
-	name, err := syscall.UTF16PtrFromString("Guest")
+	_, state, err := localGuestState()
 	if err != nil {
 		return "", err
 	}
-	var data *byte
-	err = syscall.NetUserGetInfo(nil, name, 20, &data)
-	// A missing English name may mean a localized or renamed enabled Guest account.
-	if err == syscall.Errno(2221) {
-		return "", errors.New("Guest name was not found; renamed/localized account requires SID-based discovery")
-	}
-	if err != nil {
-		return "", err
-	}
-	if data == nil {
-		return "", errors.New("empty Guest account result")
-	}
-	defer syscall.NetApiBufferFree(data)
-	info := (*userInfo20)(unsafe.Pointer(data))
-	if info.RID != 501 {
-		return "", errors.New("Guest name does not identify the built-in RID 501 account")
-	}
-	if info.Flags&2 != 0 {
+	if state[0]&2 != 0 {
 		return "False", nil
 	}
 	return "True", nil
