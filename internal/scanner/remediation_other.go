@@ -11,3 +11,5 @@ func Replace(plan RegistryPlan, want, expected RegistrySnapshot) error { return 
 func ReplaceContext(ctx context.Context, plan RegistryPlan, want, expected RegistrySnapshot) error {
 	return supportedOS()
 }
+
+func lsaTargetMode() (uint32, error) { return 0, supportedOS() }

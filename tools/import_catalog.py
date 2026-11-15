@@ -82,6 +82,8 @@ for platform in ("windows-10", "windows-11", "server-2022"):
                 rule.update(kind="firewall", name=profile+"."+prop, match=comparison, expected=expected)
             elif rule["id"] in ("WIN-PWD-002", "WIN-PWD-009"):
                 rule.update(kind="password_flag", name="complexity" if rule["id"]=="WIN-PWD-002" else "reversible_storage", match="equals", expected="1" if rule["id"]=="WIN-PWD-002" else "0")
+            if rule["id"]=="WIN-DEF-009":
+                rule.update(kind="lsa_protection", match="equals", expected="Enabled")
             if rule["kind"]!="unsupported":
                 rule.pop("reason", None)
             native_target = (rule["kind"], rule.get("path", ""), rule.get("name", ""))
@@ -89,7 +91,7 @@ for platform in ("windows-10", "windows-11", "server-2022"):
                 raise ValueError("platform target difference needs an explicit platform allowlist: " + rule["id"])
             approved_targets[rule["id"]] = native_target
             rules.append(rule)
-    result = {"version": "1", "benchmark_id": benchmark_id, "ruleset_version": "native-windows-5", "rules": rules}
+    result = {"version": "1", "benchmark_id": benchmark_id, "ruleset_version": "native-windows-6", "rules": rules}
     # Preserve canonical CRLF bytes independently of the generator host.
     manifest = (json.dumps(result, indent=2) + "\n").replace("\n", "\r\n").encode("utf-8")
     (target / (platform + ".json")).write_bytes(manifest)

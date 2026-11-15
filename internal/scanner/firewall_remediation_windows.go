@@ -104,6 +104,9 @@ func ApplyPrecondition(plan RegistryPlan) error {
 	if err != nil || approved != plan {
 		return errors.New("native apply plan is not approved")
 	}
+	if plan.RuleID == "WIN-DEF-009" {
+		return lsaApplyPrecondition(plan)
+	}
 	if plan.Provider != "firewall" {
 		return nil
 	}

@@ -117,6 +117,10 @@ func Decode(data []byte) (Ruleset, error) {
 					return rs, errors.New("invalid numeric expectation")
 				}
 			}
+		case "lsa_protection":
+			if r.ID != "WIN-DEF-009" || r.Match != "equals" || r.Expected != "Enabled" {
+				return rs, errors.New("invalid compiled LSA protection check")
+			}
 		case "password_flag":
 			name, _, desired, known := passwordFlagPolicy(r.ID)
 			if !known || r.Name != name || r.Path != "" || r.Match != "equals" || r.Expected != strconv.FormatUint(uint64(desired), 10) {

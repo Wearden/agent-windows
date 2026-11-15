@@ -30,7 +30,7 @@ var approvedTargets = map[string]approvedTarget{
 	"WIN-DEF-006": {"registry", "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer", "NoDriveTypeAutoRun"},
 	"WIN-DEF-007": {"installer_policy", "", "AlwaysInstallElevated"},
 	"WIN-DEF-008": {"registry", "SOFTWARE\\Policies\\Microsoft\\Windows\\System", "EnableSmartScreen"},
-	"WIN-DEF-009": {"registry", "SYSTEM\\CurrentControlSet\\Control\\Lsa", "RunAsPPL"},
+	"WIN-DEF-009": {"lsa_protection", "SYSTEM\\CurrentControlSet\\Control\\Lsa", "RunAsPPL"},
 	"WIN-FW-001":  {"firewall", "", "Domain.Enabled"},
 	"WIN-FW-002":  {"firewall", "", "Private.Enabled"},
 	"WIN-FW-003":  {"firewall", "", "Public.Enabled"},

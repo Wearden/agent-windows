@@ -108,6 +108,11 @@ func ReplaceContext(ctx context.Context, plan RegistryPlan, want, expected Regis
 	if !SameSnapshot(current, expected) {
 		return errors.New("registry value changed externally; refusing overwrite")
 	}
+	if plan.RuleID == "WIN-DEF-009" {
+		if err := lsaRegistryWritePrecondition(want, expected); err != nil {
+			return err
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}

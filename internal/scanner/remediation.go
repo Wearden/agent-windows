@@ -59,6 +59,18 @@ var writableAuditPolicies = map[string]uint32{
 }
 
 func Plan(ruleID string) (RegistryPlan, error) {
+	if ruleID == "WIN-DEF-009" {
+		target := approvedTargets[ruleID]
+		if target.Kind != "lsa_protection" || target.Path != `SYSTEM\CurrentControlSet\Control\Lsa` || target.Name != "RunAsPPL" {
+			return RegistryPlan{}, errors.New("invalid compiled LSA protection target")
+		}
+		mode, err := lsaTargetMode()
+		if err != nil {
+			return RegistryPlan{}, err
+		}
+		return RegistryPlan{RuleID: ruleID, Path: target.Path, Name: target.Name, Provider: "registry", ValueKind: 4, Desired: mode}, nil
+	}
+
 	if name, _, desired, known := passwordFlagPolicy(ruleID); known {
 		target := approvedTargets[ruleID]
 		if target.Kind != "password_flag" || target.Path != "" || target.Name != name {
@@ -301,6 +313,10 @@ func ValidSnapshot(plan RegistryPlan, snapshot RegistrySnapshot) bool {
 		value := binary.LittleEndian.Uint32(snapshot.Data)
 		return (kind != auditPolicySnapshotKind || value <= 3) && (kind != firewallSnapshotKind || value <= 1)
 	}
+	if plan.RuleID == "WIN-DEF-009" && snapshot.Exists && (snapshot.Kind != 4 || len(snapshot.Data) != 4 || binary.LittleEndian.Uint32(snapshot.Data) > 2) {
+		return false
+	}
+
 	return (!snapshot.Exists && snapshot.Kind == 0 && len(snapshot.Data) == 0) || (snapshot.Exists && snapshot.Kind == kind && validRegistryData(kind, snapshot.Data))
 }
 
@@ -389,6 +405,17 @@ func SnapshotStatus(plan RegistryPlan, snapshot RegistrySnapshot) string {
 	if !ValidSnapshot(plan, snapshot) {
 		return wire.Error
 	}
+	if plan.RuleID == "WIN-DEF-009" {
+		if !snapshot.Exists {
+			return wire.Fail
+		}
+		mode := binary.LittleEndian.Uint32(snapshot.Data)
+		if mode == 1 || (mode == 2 && plan.Desired == 2) {
+			return wire.Pass
+		}
+		return wire.Fail
+	}
+
 	if plan.Provider == "smb_driver" {
 		if binary.LittleEndian.Uint32(snapshot.Data) == 4 {
 			return wire.Pass
