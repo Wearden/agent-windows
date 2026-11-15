@@ -1,0 +1,5 @@
+agent.exe
+identity.dpapi
+*.pending.dpapi
+spool/
+*.tmp

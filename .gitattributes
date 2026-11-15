@@ -1,0 +1,2 @@
+# Preserve canonical ruleset bytes across independent checkouts.
+rulesets/*.json -text
