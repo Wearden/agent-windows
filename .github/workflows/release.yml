@@ -27,7 +27,9 @@ jobs:
           mkdir release
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o release/wearden-agent-windows-amd64.exe ./agent-windows/cmd/agent
           (cd release && sha256sum wearden-agent-windows-amd64.exe > SHA256SUMS)
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${GITHUB_REF_NAME}" release/* --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --generate-notes
+      - name: Store the release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: release/*
+          if-no-files-found: error
