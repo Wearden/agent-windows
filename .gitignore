@@ -3,3 +3,40 @@ identity.dpapi
 *.pending.dpapi
 spool/
 *.tmp
+
+# --- common (added for publication) ---
+# OS and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+# Logs and backups
+*.log
+*.bak
+*.orig
+*.rej
+# Secrets and key material must never be committed
+*.pem
+*.key
+*.pfx
+*.p12
+*.kdbx
+id_rsa*
+id_ed25519*
+*.dpapi
+secrets/
+
+# Build output and local agent state
+bin/
+dist/
+*.exe
+*.dll
+*.test
+*.out
+state/
+.env
+.env.*
+
